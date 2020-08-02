@@ -1,0 +1,443 @@
+#include "mbed.h"
+
+/*  NMT with selectable targets and commands */
+
+CAN can1(PA_11, PA_12);
+CAN can2(PB_12, PB_13);
+Serial pc(SERIAL_TX, SERIAL_RX,115200);
+DigitalOut led1(LED1);
+
+char data_frame[8];
+char counter;
+char target_node_id=0;
+char SDO_CCS=0;
+char SDO_NES=0;
+char IND_B1= 0;
+char IND_B2= 0;
+char SUB_IND=0; 
+unsigned int COBID=0;
+char c,d,e,f=8;
+
+CANMessage msg;
+int a;
+
+int main() {
+    printf("start\n");
+
+    can2.frequency(115200);    
+    can1.frequency(115200);     
+
+    
+/*    can1.reset();  */
+    can1.mode(CAN::Normal);
+    can2.mode(CAN::Normal);  
+
+    while(1) {
+        
+        
+  /*   select Master  command   */
+  
+        printf("select Master command:   0= NMT (02h), 1= Sync,(01h) 2= Emergency(80h), 3=Timestamp(82h), 4=RPDO2(300h), 5=SDO(600h) \n  \r");
+        
+        while (!( (c =='0')|| (c =='1')|| (c =='2')|| (c =='3')|| (c =='4')|| (c =='5')    )){
+           printf ("Type a valid command   \n \r");
+           c = pc.getc(); // Read hyperterminal
+             
+        }
+ 
+  /*   NMT command   */      
+        if (c == '0') {                     
+            pc.printf(" NMT  selected \n \r");
+            COBID=0;
+     
+           printf("select NMT command:   0= Stop (02h), 1= Start,(01h) 2= Pre-op(80h), 3=Reset_Com(82h), 4=Reset_App(81h)  \n  \r");
+        
+           while (!( (d =='0')|| (d =='1')|| (d =='2')|| (d =='3')|| (d =='4'))){
+              printf ("Type a valid command   \n \r");
+              d = pc.getc(); // Read hyperterminal
+             
+           }
+        
+           if (d == '0') {                     
+               pc.printf(" You Pressed '0': Stop \n \r");
+               data_frame[0]=2;
+            
+           }
+           if (d == '1') {             
+               pc.printf(" You Pressed '1': Start \n \r");
+               data_frame[0]=1;
+           }
+           if (d == '2') {                     
+               pc.printf(" You Pressed '2': Pre-op \n \r");
+               data_frame[0]=128;
+           }
+           if (d == '3') {           
+               pc.printf(" You Pressed '3': Reset Comms \n \r");
+               data_frame[0]=130;
+           }
+           if (d == '4') {                   
+               pc.printf(" You Pressed '4': Reset App \n \r");
+               data_frame[0]=129;
+           }
+        
+    
+    /*   select NMT target ID   */
+           printf("select NMT target ID:   valid:  a = (01h), b= Start,(02h) c=(03h), d=(04h)    \n \r");
+        
+           while ( !((e =='a')|| (e =='b')|| (e =='c')|| (e =='d'))){
+              printf ("Type a valid command    \n \r");
+              e = pc.getc(); // Read hyperterminal          
+           }
+        
+           if (e == 'a') {                     
+               pc.printf(" ID 01 selected \n \r");
+               data_frame[1]=1;           
+           }
+        
+           if (e == 'b') {             
+               pc.printf(" ID 02 selected \n \r");
+               data_frame[1]=2;
+           }   
+        
+           if (e == 'c') {             
+               pc.printf(" ID 03 selected \n \r");
+               data_frame[1]=3;
+           }
+           
+           if (e == 'd') {             
+               pc.printf(" ID 04 selected \n \r");
+               data_frame[1]=4;
+           }   
+                    
+        }  /* End if NMT  */
+        
+  /* Sync Command  */      
+        if (c == '1') {             
+            pc.printf(" Sync  selected \n \r");
+            COBID=128;
+        }   /* End if Sync */
+        
+   /* Emergency Command  */            
+        if (c == '2') {                     
+            pc.printf("Emergency selected  \n \r");
+            COBID=2;
+        }   /*End if Emergency   */
+        
+   /* Timestamp Command   */    
+        if (c == '3') {           
+            pc.printf(" You Pressed '3': Timestamp \n \r");
+            COBID=3;
+        }   /* End if timestamp  */
+        
+    /*  RPDO command   */    
+        if (c == '4') {                   
+            pc.printf(" You Pressed '4': PDO \n \r");
+            
+            
+        /*   select RPDO number  */
+           printf("select RPDO number:   valid numbers= 1-4    \n \r");
+        
+           while ( !((f =='1')|| (f =='2')|| (f =='3')|| (f =='4'))){
+              printf ("Type a valid number    \n \r");
+              f = pc.getc(); // Read hyperterminal          
+           }  /*end while */
+        
+           if (f == '1') {                     
+               pc.printf(" RPDO1 selected \n \r");
+               
+            
+               
+               f=8;
+               COBID=513;
+                       
+           }  /* end if rpdo1  */
+           
+           
+        
+           if (f == '2') {             
+               pc.printf(" RPDO2 selected \n \r");
+                
+               
+              /*   select RPDO2 state: on or off   */
+              printf("select RPDO2 sate  valid:  a = (ON), b= (OFF)     \n \r");
+        
+              while ( !( (d =='a')|| (d =='b') )){
+                 printf ("Type a valid command    \n \r");
+                 d = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (d == 'a') {                     
+                  pc.printf(" ON selected \n \r");
+                  data_frame[0]=1;           
+              }
+        
+              if (d == 'b') {             
+                  pc.printf(" OFF selected \n \r");
+                  data_frame[0]=2;
+              }     
+            
+                                
+         
+             /*   select PDO target ID   */
+              printf("select RPDO target ID:   valid:  a = (01h), b= Start,(02h) c=(03h), d=(04h)    \n \r");
+        
+              while ( !((e =='a')|| (e =='b')|| (e =='c')|| (e =='d'))){
+                 printf ("Type a valid command    \n \r");
+                 e = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (e == 'a') {                     
+                  pc.printf(" ID 01 selected \n \r");
+                  target_node_id=1;           
+              }
+        
+              if (e == 'b') {             
+                  pc.printf(" ID 02 selected \n \r");
+                  target_node_id=2;
+              }   
+        
+              if (e == 'c') {             
+                  pc.printf(" ID 03 selected \n \r");
+                  target_node_id=3;
+              }
+           
+              if (e == 'd') {             
+                  pc.printf(" ID 04 selected \n \r");
+                  target_node_id=4;
+              }      
+            
+              e=8;
+              f=8;
+              data_frame[1]= target_node_id;
+              COBID=768 + target_node_id ;    
+                              
+               
+           }   /* end if rpdo2 */
+           
+    
+        
+           if (f == '3') {             
+               pc.printf(" RPDO3 selected \n \r");
+               
+               f=8;
+               COBID=1025;
+               
+           }    /* end if rpdo 3*/
+           
+           
+           if (f == '4') {             
+               pc.printf(" RPDO4 selected \n \r");
+               
+               f=8;
+               COBID=1281;
+               
+           }  /* end if rpdo4  */            
+            
+            
+                      
+        }   /*End if PDO */
+        
+ 
+       /* SDO   */            
+        if (c == '5') {                     
+              pc.printf("SDO selected  \n \r");
+            
+            /*   select SDO target ID   */
+              printf("select RSDO target ID:   valid:  a = (01h), b= Start,(02h) c=(03h), d=(04h)    \n \r");
+        
+              while ( !((e =='a')|| (e =='b')|| (e =='c')|| (e =='d'))){
+                 printf ("Type a valid ID    \n \r");
+                 e = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (e == 'a') {                     
+                  pc.printf(" ID 01 selected \n \r");
+                  target_node_id=1;           
+              }
+        
+              if (e == 'b') {             
+                  pc.printf(" ID 02 selected \n \r");
+                  target_node_id=2;
+              }   
+        
+              if (e == 'c') {             
+                  pc.printf(" ID 03 selected \n \r");
+                  target_node_id=3;
+              }
+           
+              if (e == 'd') {             
+                  pc.printf(" ID 04 selected \n \r");
+                  target_node_id=4;
+              }      
+              e=8;
+              
+  
+         /*   select SDO type upload/download  */
+              printf("select SDO opeation:   valid:  a = download (01h), b= upload(02h)    \n \r");
+        
+              while ( !((d =='a')|| (d =='b'))){
+                 printf ("Type a valid operation    \n \r");
+                 d = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (d == 'a') {                     
+                  pc.printf(" ccs= 01 selected: download \n \r");
+                  SDO_CCS=32;           
+              }
+        
+              if (d == 'b') {             
+                  pc.printf(" ccs= 02 selected: upload \n \r");
+                  SDO_CCS=64;
+              }   
+              
+              d=20;
+              
+    
+            /*   select SDO N,E and S  */
+              
+              printf("select N, E and S:   valid:  a = (0011), b= (0111) c=(1011), d=(1111)    \n \r");
+        
+              while ( !((e =='a')|| (e =='b')|| (e =='c')|| (e =='d'))){
+                 printf ("Type a valid ID    \n \r");
+                 e = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (e == 'a') {                     
+                  pc.printf(" n=0 selected \n \r");
+                  SDO_NES=3;           
+              }
+        
+              if (e == 'b') {             
+                  pc.printf(" n=1 selected \n \r");
+                  SDO_NES=7;
+              }   
+        
+              if (e == 'c') {             
+                  pc.printf(" n=2 selected \n \r");
+                  SDO_NES=11;
+              }
+           
+              if (e == 'd') {             
+                  pc.printf(" n=3 selected \n \r");
+                  SDO_NES=15;
+              }      
+              e=8;
+ 
+ 
+ 
+ 
+          /*   select SDO index bytes 1 and 2 and subindex  */
+          
+              printf("select RSDO index  and subindex valid:  a=device  (1000h sub 00h),  b = heartbeat(1017h sub 00h), c= ID prod code(1018h sub02),  d= ID rev no. (1018h sub 03h), e= ID serial no.(1018h sub 04h)    \n \r");
+        
+              while ( !( (e =='a')|| (e =='b')|| (e =='c')|| (e =='d')|| (e =='e') )){
+                 printf ("Type a valid ID    \n \r");
+                 e = pc.getc(); // Read hyperterminal          
+              }
+        
+              if (e == 'a') {                     
+                  pc.printf(" device object selected \n \r");
+                  IND_B1= 16 ;
+                  IND_B2= 0 ;
+                  SUB_IND= 0 ;           
+              }
+        
+              if (e == 'b') {             
+                  pc.printf(" heartbeat object selected \n \r");
+                  IND_B1=  16 ;
+                  IND_B2=  23 ;
+                  SUB_IND= 0 ; 
+                  
+              }   
+        
+              if (e == 'c') {             
+                  pc.printf(" product code object selected \n \r");
+                  IND_B1=  16  ;
+                  IND_B2=  24  ;
+                  SUB_IND= 2  ; 
+                  
+              }
+           
+              if (e == 'd') {             
+                  pc.printf(" n=3 selected \n \r");
+                  IND_B1=  16  ;
+                  IND_B2=  24  ;
+                  SUB_IND= 3 ; 
+                  
+              } 
+              
+              if (e == 'e') {             
+                  pc.printf(" n=3 selected \n \r");
+                  IND_B1=  16 ;
+                  IND_B2=  24 ;
+                  SUB_IND= 4  ; 
+                  
+              }  
+              
+                             
+                    
+              d=20;
+              e=8;
+              
+              
+              
+              data_frame[0] = SDO_CCS + SDO_NES;
+              data_frame[1] = IND_B1;
+              data_frame[2] = IND_B2;
+              data_frame[3] = SUB_IND;
+              data_frame[4] = 0;
+              data_frame[5] = 0;
+              data_frame[5] = 0;
+              data_frame[7] = 0;
+              
+              
+                          
+              COBID= 1536 + target_node_id;
+              
+              
+        }   /*End if SDO   */
+ 
+    
+    
+    
+        
+    /* Transmit command  , receive response   */   
+        
+        if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+            printf("COBID= %d\n", COBID );
+            printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+            printf("message sent on can1 =:   %d\n", data_frame);
+        } 
+        else {
+            printf("error\n");
+        }
+        can1.read(msg);
+        printf("Received from Node ID:    %d,data0_rec: %d,data1_rec: %d,data2_rec: %d,data3_rec: %d,data4_rec: %d,data5_rec: %d,data6_rec: %d,data7_rec: %d \n \r",msg.id, msg.data[0],msg.data[1],msg.data[2],msg.data[3],msg.data[4],msg.data[5],msg.data[6],msg.data[7]);    
+   
+        
+        printf("data received by can1: %d\n", msg.data); 
+        
+      
+        counter++;
+       
+        data_frame[2]=counter;
+        data_frame[3]=0;
+        data_frame[4]=counter+2;
+        data_frame[5]=0;
+        data_frame[6]=counter+4;
+        data_frame[7]=111;
+        
+        led1 = !led1;
+        c=8;
+        d=8;
+        e=8;
+        
+        wait_ms(5000);   
+        
+        
+             
+  }  /* End loop */       
+
+} /*  end main  */
+
