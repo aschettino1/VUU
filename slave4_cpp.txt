@@ -1,0 +1,945 @@
+#include "mbed.h"
+#include "stdbool.h"
+
+FlashIAP flash;
+
+
+
+/*  Slave 4:  Slave3 +  proper usage of analog inputs   */
+
+CAN can1(PA_11, PA_12);
+CAN can2(PB_12, PB_13);
+
+Serial pc(SERIAL_TX, SERIAL_RX,115200);
+
+DigitalOut led1(LED1);
+DigitalOut led_batst(PA_8);
+DigitalOut led_baton(PA_6);
+DigitalOut led_batcom(PA_7);
+
+DigitalOut relay1(PC_8);
+DigitalOut relay2(PC_9);
+DigitalOut mosfet(PC_12);
+
+DigitalOut USBA(PB_15);
+DigitalOut USBB(PB_14);
+
+DigitalIn  ID3(PC_6);
+DigitalIn  ID2(PC_7);
+DigitalIn  ID0(PA_8);
+DigitalIn  ID1(PA_9);
+
+Ticker  readsinpersec;
+Ticker  localdisplay;
+
+InterruptIn bat_ctrl(PC_13);
+InterruptIn shortcint(PB_2);  
+
+AnalogIn adc_temp(ADC_TEMP);
+AnalogIn analog_value_0(A0);
+AnalogIn analog_value_1(A1);
+AnalogIn analog_value_2(A2);
+
+   
+bool chargeflag1, chargeflag2, precf1, precf2 = true;
+
+float incurrent1, incurrent2, outcurrent1, outcurrent2,  voltage, temperature, soc1, soc2, soctot, soh, lifedischg;
+
+uint16_t floincur1, floincur2 , flovolt, flotemp, cycle1, cycle2;
+
+unsigned int COBID=0;
+
+char  voltdisp, incurrdisp1, outcurrdisp1, incurrdisp2, outcurrdisp2, soctotdisp, sohdisp, cycle1disp, cycle2disp, tempdisp,lfdschdisp;
+
+char relval1, relval2=0;
+char data_frame[8];
+char counter;
+
+char my_node_id=0;
+char node_state=0;
+char c=8;
+
+char SDO_CCS=0;
+char SDO_NES=0;
+char IND_B1= 0;
+char IND_B2= 0;
+char SUB_IND=0;
+
+char baton_flag =0;
+char shortc_flag =0;
+
+char sync_flag=0;
+
+char add0=0;
+char add1=0;
+char add2=0;
+char add3=0;
+
+
+CANMessage msg;
+
+
+
+
+/* Functions    */
+
+
+void bat_plug() { /* Detects that battery is plugged in backplane, gets node id from digital inputs and turns switch on,  */
+
+  /*  get node id  */
+
+  add0= ID0;
+  add1= ID1;
+  add2= ID2;
+  add3= ID3;
+  
+
+
+
+  my_node_id= ( (add3 << 3) + (add2 << 2) + (add1 << 1) + (add0) );
+  printf ("add3=  %d, add2=  %d, add1= %d, add0= %d\n\r", add3, add2, add1, add0 );
+  printf ("my_node_id= %d\n\r", my_node_id);
+  
+  /* switch on    */
+  led_baton = 1;
+  baton_flag =1; 
+  relay1 = 1;      /*signal for latch on */
+  relval1= 1;
+  relay2 = 0; 
+  relval2= 0;                  
+                     
+      /*  waits for relay to latch and resets relay control signals to 0   */     
+  printf ("relay1=  %d,relay2=  %d, baton_flag%d \n\r", relval1, relval2, baton_flag );
+  wait_ms(1000); 
+  relay1 =0;
+  relay2 =0;   
+
+}   /* end bat_plug  */
+
+
+
+void bat_unplug() { /* Detects that battery is unplugged from backplane, turns switch off  */
+
+  led_baton = 0;
+  baton_flag =0;
+  relay1 = 0;      /*signal for latch on */
+  relval1= 0;
+  relay2 = 1; 
+  relval2= 1;                  
+                     
+      /*  waits for relay to latch and resets relay control signals to 0   */     
+  printf ("relay1=  %d,relay2=  %d, baton_flag%d \n\r", relval1, relval2, baton_flag );
+  wait_ms(1000); 
+  relay1 =0;
+  relay2 =0;   
+ 
+}   /* end bat_unplug  */
+
+
+
+void shortc_break() { /* Detects that battery is unplugged from backplane, turns switch off  */
+
+  shortc_flag =1;
+  baton_flag =0;
+  relay1 = 0;      /*signal for latch on */
+  relval1= 0;
+  relay2 = 1; 
+  relval2= 1;                  
+                     
+      /*  waits for relay to latch and resets relay control signals to 0   */     
+  printf ("relay1=  %d,relay2=  %d  short circuit flag= %d  baton_flag= %d\n\r", relval1, relval2, shortc_flag, baton_flag );
+  wait_ms(1000); 
+  relay1 =0;
+  relay2 =0;   
+ 
+}   /* end bat_unplug  */
+
+
+void readinsec()
+{
+   
+   /*  read all analog values for 10x /sec and get average, use output  to  calculate "real"  values and store in logs */      
+                      
+                     
+    int i=0; 
+    uint16_t acctemp=0;
+    uint16_t accincur1=0;
+    uint16_t accincur2=0;
+    uint16_t accvolt=0;
+    
+    float avetemp, aveincur1, aveincur2, avevolt;
+  
+  /* read 10x and get the average of all analog inputs  */
+      
+    for (i = 1; i <= 10; i++) 
+    { 
+       flotemp = (adc_temp.read()*100);
+       floincur1 = (analog_value_0.read()*3300);                    
+       floincur2 = analog_value_1.read()*3300;
+       flovolt = analog_value_2.read()*3300;
+       acctemp = acctemp + flotemp;
+       accincur1 = accincur1 + floincur1;
+       accincur2 = accincur2 + floincur2;
+       accvolt = accvolt + flovolt;      
+       
+       wait_ms(60);                      
+        
+    } 
+     
+    avetemp= acctemp/10;
+    aveincur1= accincur1/10;
+    aveincur2= accincur2/10;
+    avevolt= accvolt/10;
+ 
+    
+  /* calculate voltage and temeperature           */
+  
+    voltage = avevolt*50/1000;
+    temperature = avetemp;
+  
+  
+  
+    
+  /* calculate incoming and outgoing currents     */
+ 
+                    if ((aveincur1 -1655) >=1 ) {
+                         incurrent1 = (aveincur1 - 1655)/ 9;
+                         outcurrent1 = 0;
+                         chargeflag1 = true;
+                     }
+                     else  {
+                         outcurrent1 = (1655- aveincur1)/ 9;
+                         incurrent1  = 0;
+                         chargeflag1= false;
+                     }
+                     
+                     
+                     
+                     if ((aveincur2 -1655) >=1 ) {
+                         incurrent2 = (aveincur2 - 1655)/ 9;
+                         outcurrent2 = 0;
+                         chargeflag2 = true;
+                     }
+                     else  {
+                         outcurrent2 = (1655- aveincur2)/ 9;
+                         incurrent2  = 0;
+                         chargeflag2= false;
+                     }
+                  
+                    
+  
+  
+  /* calculate number of charge cycles   */
+  
+     if (chargeflag1 != precf1){
+        cycle1= cycle1 + 1;    
+    }
+    precf1 = chargeflag1;
+                     
+                     
+    if (chargeflag2 != precf2){
+        cycle2= cycle2 + 1;    
+    }
+    precf2 = chargeflag2;
+                     
+                     
+                     
+  /* calculate state of charge         */
+
+    soc1= soc1 + ( ( (incurrent1 - outcurrent1)/3600) /6.2 )*50;    /*  6.2 is used because current is already in Amps and capacity of each series is 2600 mA; x2 per module */
+    
+    soc2= soc2 + ( ( (incurrent2 - outcurrent2)/3600) /6.2 )*50;    /*  3600 to convert seconds to hrs in A-hr  measurement;   x50 because each module provides 1/2 the capacity   */
+    
+    soctot= soc1+soc2;
+  
+  
+  
+  
+  
+  /* calculate state of health        */
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  /* calculate/typecast all values for transmission and display  */                 
+                     
+    incurrdisp1 = (char)  incurrent1   ;
+    outcurrdisp1 = (char) outcurrent1  ;
+    incurrdisp2 =  (char) incurrent2  ;
+    outcurrdisp2 = (char) outcurrent2 ; 
+    soctotdisp  = (char)  soctot ;    
+    cycle1disp  = (char)  cycle1;                
+                          
+    voltdisp    = (char) voltage  ;
+    tempdisp  = (char) temperature;
+                     
+                     
+                     
+    
+   
+   
+    
+}   /* end readinsec  */
+
+
+
+void locdisp()
+/*  displays all read and aggregated parameters via uart  at a fixed frequency */
+
+
+{
+     printf("incurrent1: %f\n\r", incurrent1 );
+     printf("outcurrent1: %f\n\r", outcurrent1 );
+     printf("incurrent2: %f\n\r", incurrent2 );
+     printf("outcurrent2: %f\n\r", outcurrent2 );               
+     printf("voltage: %f\n\r", voltage);
+     printf("temperature: %f\n\r", temperature);
+     printf("SOC1: %f\n\r", soc1);
+     printf("SOC2: %f\n\r", soc2);
+     printf("SOC tot: %f\n\r", soctot);
+     printf("No of cycles: %u\n\r", cycle1);
+    
+    
+}   /* end locdisp  */
+
+
+
+
+
+
+
+
+
+int a;
+
+int main() {
+    printf("start\n");
+    __enable_irq();     // Enable Interrupts
+    
+    /* check for battery plug- unplug   */
+    
+    bat_ctrl.rise(&bat_plug);   /* attach the address of the battery plugged function  */
+    bat_ctrl.fall(&bat_unplug);   /* attach the address of the battery unplugged function   */
+
+   /* enable short circuit interrupt */
+    shortcint.rise(&shortc_break);  /* attach the address of the short circuit open switch function */
+ 
+   /* enable analog reads  */
+    readsinpersec.attach(&readinsec, 1.0); /* the address of the function to be attached (readinsec ) and the interval (1 second)  */
+    
+    /* enable local display of read and aggregated vars  */
+    localdisplay.attach(&locdisp, 5.0); /* the address of the function to be attached (readinsec ) and the interval (5 second)  */
+    
+    
+    
+    
+    /* flash initialization   */
+    flash.init();   
+    
+    const uint32_t  flash_start = flash.get_flash_start();
+    const uint32_t  flash_size = flash.get_flash_size();
+    const uint32_t  flash_end = flash_start + flash_size;
+/*    const uint32_t  page_size = flash.get_page_size();         */         // in bytes
+    uint32_t        page_size = flash.get_page_size();          /* what this gives is the minimum page size that can be handled = 1 byte, not really useful...*/
+    uint32_t        sector_size = flash.get_sector_size(flash_end - 1); // in bytes
+    uint32_t        addr = flash_end - sector_size;                     // address of first byte in the last sector
+
+    printf("flash_start = 0x%.8x\r\n", flash_start);
+    printf("flash_size = 0x%.8x\r\n", flash_size);
+    printf("flash_end = 0x%.8x\r\n", flash_end);
+    printf("page_size = 0x%.8x\r\n", page_size);
+    printf("sector_size = 0x%.8x\r\n", sector_size);
+    printf("addr = 0x%.8x\r\n", addr);
+    printf("----------------------\r\n");
+    
+    // Create an array in SRAM (later on to be stored in the first page of last sector in FLASH)
+    uint32_t        data_len = page_size/sizeof(uint32_t);      // calculate available space
+    uint32_t*       data = new uint32_t[data_len] ;    /* create an array in SRAM and initialize the first three elements */
+    
+    
+    
+    /* page size returns a 1 from read , arbitrarily change page_size  to 20   to try it:     13jul20 2:30 pm */
+    /* found out that this number is in bytes so if each array element is 32 bits you need page_size=4 to store just one element:  13jul20 3:40pm */
+    page_size = 80;   /* good for up to 20 elements  */
+    printf(" just changed page_size to: 0x%.8x\r\n", page_size);
+    
+    // read data from flash before operations
+    flash.read(data, addr, page_size);      // read needs page_size
+
+    // Print the first 15 elements
+    for (int i = 0; i < 15; i++) {
+        printf("data[%d] = %d\r\n", i, data[i]);
+    }
+    
+    data[0]  = 0x0F01A2;
+    data[1]  = 2;
+    data[2]  = 5000;
+    data[6] =     101    ;
+    data[7] =   2      ;
+    data[8] =      2   ;
+
+    data[11] = 1572; // set element 11 to 572
+    
+    // Print the first 15 elements
+    for (int i = 0; i < 15; i++) {
+        printf("data[%d] = %d\r\n", i, data[i]);
+    }
+    
+    
+    // Store the array 'data' in FLASH
+    flash.erase(addr, sector_size);         // erase needs sector_size (not page size)
+    flash.program(data, addr, page_size);   // write needs page_size
+
+
+    printf("----------------------\r\n");
+    
+    // Clear the first 15 elements in SRAM (to see whether they are going to be updated with values stored in FLASH)
+    for (int i = 0; i < 15; i++) {
+        data[i] = 0;
+        printf("data[%d] = %d\r\n", i, data[i]);
+    }
+
+    printf("----------------------\r\n");
+
+    // Update the SRAM array with values stored in FLASH
+    flash.read(data, addr, page_size);      // read needs page_size
+
+    // Print the first 15 elements
+    for (int i = 0; i < 15; i++) {
+        printf("data[%d] = %d\r\n", i, data[i]);
+    }
+    
+    /*  (delete data) and close flash */
+/*    delete[] data;                 we want to keep that array at least for now  */
+    flash.deinit();
+
+    printf("----------------------\r\n");
+    printf("Done.\r\n");
+    
+    
+    
+    
+    
+    
+
+    can2.frequency(115200);    
+    can1.frequency(115200);     
+
+    
+/*    can1.reset();  */
+    can1.mode(CAN::Normal);
+    can2.mode(CAN::Normal);  
+
+   
+  
+
+ /* Initial operation and variable settings   */             
+    
+ /*   select node  ID for this device    */
+ 
+        printf("select node ID for this device:   valid:  a = (01h), b= Start,(02h) c=(03h), d=(04h)    \n \r");
+        
+        while ( !((c =='a')|| (c =='b')|| (c =='c')|| (c =='d'))){
+           printf ("Type a valid id    \n \r");
+           c = pc.getc(); // Read hyperterminal          
+        }
+        
+        if (c == 'a') {                     
+            pc.printf(" ID 01 selected \n \r");
+            my_node_id=1;           
+        }
+        
+        if (c == 'b') {             
+            pc.printf(" ID 02 selected \n \r");
+            my_node_id=2;
+        }   
+        
+        if (c == 'c') {             
+            pc.printf(" ID 03 selected \n \r");
+            my_node_id=3;
+        }
+           
+        if (c == 'd') {             
+            pc.printf(" ID 04 selected \n \r");
+            my_node_id=4;
+        }   
+        
+        
+        
+        
+ /*   main loop     */       
+        
+    
+ while(1) {
+    
+        
+/*  read msg from master   */     
+
+                       
+        can1.read(msg);
+        printf("Received from Node ID:    %d,data0_rec: %d,data1_rec: %d,data2_rec: %d,data3_rec: %d,data4_rec: %d,data5_rec: %d,data6_rec: %d,data7_rec: %d \n \r",msg.id, msg.data[0],msg.data[1],msg.data[2],msg.data[3],msg.data[4],msg.data[5],msg.data[6],msg.data[7]);           
+        printf("data received by can1: %d\n", msg.data); 
+ 
+        
+ /*  check for master commands for me  */
+ 
+ /*    check for NMT                  */    
+    
+        if ( (msg.id==0)&&(msg.data[1]==my_node_id)  ) {
+                      node_state=msg.data[0];
+                      pc.printf(" NMT is for this device \n \r");
+        } 
+        else {
+          node_state=0;           
+        }    
+               
+               
+ /*  act on start command                                    */              
+               if (node_state == 1) {             
+                  pc.printf(" Start operation \n \r");
+                  
+                  data_frame[0]=1;
+                  data_frame[1]=my_node_id;
+                  data_frame[2]=msg.id;
+                         
+                  if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                       printf("sent by %d\n", my_node_id );
+                       printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                       printf("message sent on can1 =:   %d\n", data_frame);
+                  } 
+                  else {
+                       printf("error\n");
+                  }                                               
+                  
+               }   /* end if */
+               
+            /* loop within start                         */             
+               while  (node_state==1){
+                
+                  can1.read(msg);                
+                  if ( (msg.id==0)&&(msg.data[1]==my_node_id)  ) {
+                      node_state=msg.data[0];
+                  }   /* end if change node state   */
+                  
+  
+               /*    check for Sync                  */    
+    
+                  if ( msg.id==128  ) {
+                         
+                     pc.printf(" Sync requested \n \r");
+                     msg.id=3000;
+                     
+                /*  read requested values for sync  */      
+   
+      
+                /* prepare TPDO to send with sync    */
+                                    
+                     COBID=  384  + my_node_id;    /*  TPDO :  TPDO1 (180H) +  node id  */    
+                     data_frame[0]=  incurrdisp1;
+                     data_frame[1]=  outcurrdisp1;
+                     data_frame[2]=  incurrdisp2;
+                     data_frame[3]=  outcurrdisp2;
+                     data_frame[4]=  soctotdisp;
+                     data_frame[5]=  sohdisp;
+                     data_frame[6]=  voltdisp;
+                     data_frame[7]=  tempdisp;
+                     
+                         
+                     if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                          printf("sent by %d\n", my_node_id );
+                          printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                          printf("message sent on can1 =:   %d\n", data_frame);
+                     } 
+                     else {
+                          printf("error\n");
+                     }                                     
+                          
+                                             
+                
+                  }  /* end if  sync*/
+                  
+                  
+                  
+              /*    check for RPDO2                  */    
+    
+                  if (  (msg.id==768+ my_node_id)     ) {
+                         
+                     pc.printf(" RPDO2 requested for this node \n \r");
+                     pc.printf(" state requested %d \n \r", msg.data[0]);
+                     msg.id=3000;
+                     
+                /*  Turn relays on and off as requested. Turn control signals on or off for 1 second then turn them off; relays are latched,they will remain on or off as needed */  
+                     relay1 =(msg.data[0]&1 );      /*signal for latch on */
+                     if (relay1 ==1){
+                          relval1=1;
+                     }
+                     else {
+                         relval1=0;  
+                     }  
+                                       
+                     relay2 =(msg.data[0]&2 );      /*signal for latch off*/
+                     if (relay2 ==1){
+                          relval2=1;
+                     }
+                     else  {
+                          relval2=0;      
+                     }  
+                     
+   
+   
+                    
+                     
+                /*  waits for relay to latch and resets relay control signals to 0   */     
+                                        
+                     printf ("relay1=  %d,relay2=  %d \n\r", relval1, relval2 );
+                     wait_ms(1000); 
+                     relay1 =0;
+                     relay2 =0;      
+                     
+                     
+                 /*  replies with TPDO2   indicating state of the switch acknowledging command and in and out current values to validate switch state*/     
+                     
+                     COBID=  640  + my_node_id;    /*  TPDO :  TPDO1 (180H) +  node id  */    
+                     data_frame[0]=768 + my_node_id;
+                     data_frame[1]=  my_node_id;
+                     data_frame[2]=  incurrdisp1;
+                     data_frame[3]=  outcurrdisp1;
+                     data_frame[4]=  relval1;
+                     data_frame[5]=  relval2;
+                     data_frame[6]=  0;
+                     data_frame[7]=  111;
+                     
+                         
+                     if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                          printf("sent by %d\n", my_node_id );
+                          printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                          printf("message sent on can1 =:   %d\n", data_frame);
+                     } 
+                     else {
+                          printf("error\n");
+                     }        
+                                  
+             
+                  
+                  }   /* end if rpdo2   */
+                  
+  
+  
+  
+             /*    check for SDO                  */    
+    
+                  if (  (msg.id== 1536 + my_node_id)     ) {
+                         
+                     pc.printf(" SDO requested for this node \n \r");
+                     pc.printf(" operation requested: %d \n \r", msg.data[0]);
+                     msg.id=3000;    /* exit the current selection at end of loop */
+                     
+               /*    Reads or writes on OD  as requested.                         */  
+                     SDO_CCS=(msg.data[0]&224 );      /* OD upload and download control */
+                     if (SDO_CCS==1){
+                          
+                          pc.printf(" download (write) OD requested \n \r"); 
+   
+   
+                                                          
+                          
+                     }  /* end if download  */
+                     
+                       /* if not download it's an upload (read)  */
+                     
+                     else {
+                          pc.printf(" upload (read) OD requested \n \r");
+                       
+                       
+                     /*   reads requested data from OD and prepares for it's transmision   */  
+                     
+                     
+                     /*   check for device object      */ 
+ 
+                         if (   (msg.data[1]==16) && (msg.data[2]==0)  ) {
+                             
+                             pc.printf(" device object requested \n \r");
+                             
+                     /*  open flash and read it    */        
+                             
+                             flash.init(); 
+                             flash.read(data, addr, page_size);      /* read needs page_size*/
+                             
+                             
+                             data_frame[0]= data[0]& 255;                                                     
+                             data_frame[1]= (data[0]& 65280) >> 8 ;
+                             data_frame[2]= (data[0]& 16711680) >> 16;
+                             data_frame[3]= (data[0]& 4278190080)>> 24 ;
+                             
+                             
+                         /* close flash   */    
+                             flash.deinit();
+                             
+                             
+                             } /* end if device object requested */ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+                          
+                                    
+
+                     /*  replies with TSDO containing requested data                        */     
+                      
+                          COBID=  1408  + my_node_id;    /*  TSDO :  TPDO1 (180H) +  node id  */    
+                          
+                          
+                          
+                          data_frame[4]=  0;
+                          data_frame[5]=  0;
+                          data_frame[6]=  0;
+                          data_frame[7]=  111;
+                     
+                         
+                          if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                               printf("sent by %d\n", my_node_id );
+                               printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                               printf("message sent on can1 =:   %d\n", data_frame);
+                          } 
+                          else {
+                               printf("error\n");
+                               
+                          }  /*  end can tx  */
+                                       
+                         
+                     }   /* end if upload  */
+                                       
+                     
+                                      
+                  }   /* end if SDO   */
+  
+  
+  
+  
+  
+                        
+                         
+                  
+                  printf ("still in operation state \n\r");
+                  wait_ms(1000); 
+               
+               }  /* end while loop in start */
+
+
+
+
+        
+               
+  /*  act on stop command                                    */                              
+               if (node_state == 2) {             
+                  pc.printf(" Stop operation  \n \r");
+                  
+                  data_frame[0]=2;
+                  data_frame[1]=my_node_id;
+                  data_frame[2]=msg.id;
+                         
+                  if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                       printf("sent by %d\n", my_node_id );
+                       printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                       printf("message sent on can1 =:   %d\n", data_frame);
+                  } 
+                  else {
+                       printf("error\n");
+                  }  
+                  
+               }
+               
+             /* loop within stop                        */             
+               while  (node_state==2){
+                
+                  can1.read(msg);                
+                  if ( (msg.id==0)&&(msg.data[1]==my_node_id)  ) {
+                      node_state=msg.data[0];
+                  }
+                  
+                  
+                  
+                  
+                  
+                  printf ("still in stop \n\r");
+                  wait_ms(1000); 
+               
+               }               
+               
+               
+               
+               
+               
+ /*  act on pre-op command                                    */     
+               
+               if (node_state == 128 ) { 
+                                                   
+                  pc.printf(" Start Pre-op \n \r");
+                  
+                  data_frame[0]=128;
+                  data_frame[1]=my_node_id;
+                  data_frame[2]=msg.id;
+                         
+                  if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                       printf("sent by %d\n", my_node_id );
+                       printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                       printf("message sent on can1 =:   %d\n", data_frame);
+                  } 
+                  else {
+                       printf("error\n");
+                  }  
+                  
+               }
+  
+  
+           /* loop within pre-op                         */             
+               while  (node_state==128){
+                
+                  can1.read(msg);                
+                  if ( (msg.id==0)&&(msg.data[1]==my_node_id)  ) {
+                      node_state=msg.data[0];
+                  }
+                  
+                  
+                  
+                  
+                  
+                  printf ("still in pre-op loop \n\r");
+                  wait_ms(1000); 
+               
+               }
+               
+               
+               
+/*  act on reset comms command                                    */     
+
+               if (node_state == 130) {           
+                  pc.printf(" Reset Comms \n \r");
+                  
+                  data_frame[0]=130;
+                  data_frame[1]=my_node_id;
+                  data_frame[2]=msg.id;
+                         
+                  if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                       printf("sent by %d\n", my_node_id );
+                       printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                       printf("message sent on can1 =:   %d\n", data_frame);
+                  } 
+                  else {
+                       printf("error\n");
+                  }  
+                  
+               }
+               
+               
+/*  act on reset app command                                    */     
+
+               if (node_state == 129) {                   
+                  pc.printf(" Reset App \n \r");
+                  
+                  data_frame[0]=129;
+                  data_frame[1]=my_node_id;
+                  data_frame[2]=msg.id;
+                         
+                  if(can1.write(CANMessage(COBID, &data_frame[0], 8))) {      
+
+                       printf("sent by %d\n", my_node_id );
+                       printf("data0_tx: %d,data1_tx: %d,data2_tx: %d,data3_tx: %d,data4_tx: %d,data5_tx: %d,data6_tx: %d,data7_tx: %d \n \r",data_frame[0],data_frame[1],data_frame[2],data_frame[3],data_frame[4],data_frame[5],data_frame[6],data_frame[7]);    
+                       printf("message sent on can1 =:   %d\n", data_frame);
+                  } 
+                  else {
+                       printf("error\n");
+                  }  
+                
+                 
+               }                      
+            
+          
+            
+                   
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+    
+        
+ 
+ 
+ 
+ /*    check for    1    */
+        
+        if (msg.id==1) {                     
+            pc.printf(" 1  received \n \r");
+                        
+        }
+        
+        
+        
+/*  check for    2    */
+        
+        if (msg.id==2) {                     
+            pc.printf(" 2  received \n \r");
+            
+            
+        }
+        
+        
+        
+        
+        
+/* check for messages from other nodes */        
+        
+ 
+/*   check for    3    */
+        
+        if (msg.id==3) {                     
+            pc.printf(" 3  received \n \r");
+            
+            
+        }
+        
+        
+        
+/*   check for    4   */
+        
+        if (msg.id==4) {                     
+            pc.printf(" 4  received \n \r");
+            
+            
+        }
+ 
+ 
+        
+        led1 = !led1;
+        
+        wait_ms(5000);        
+        
+    }
+}
+
